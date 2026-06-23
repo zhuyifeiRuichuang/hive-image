@@ -77,8 +77,8 @@ jobs:
           tags: |
             docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}
           #   docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}-${{ env.SHORT_SHA }}
-          # cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22
-          # cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22,mode=max
+          cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22
+          cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22,mode=max
 
       # Build + push ubuntu25 -> dev2
       - name: Build and push (ubuntu25 -> dev2)
@@ -92,8 +92,8 @@ jobs:
           tags: |
             docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV2 }}
           #   docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV2 }}-${{ env.SHORT_SHA }}
-          # cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25
-          # cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25,mode=max
+          cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25
+          cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25,mode=max
 
       # 输出推送的 tag（便于后续检查）
       - name: Post-check (log pushed tags)
