@@ -1,5 +1,4 @@
 name: Build and publish to GHCR
-# 触发器：push 到 main 或创建 v* tag，且支持手动触发
 on:
   push:
     branches: [ main ]
@@ -7,13 +6,12 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# 最小化权限：contents 只读；packages 写（推镜像需要）
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  # 防止并发推同名 tag/镜像互相覆盖，最新的 run 会取消之前的同组 run
+  # 如果你不想取消旧的运行，把 cancel-in-progress 设为 false
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
@@ -22,58 +20,50 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_NAME: apachehive
-      # 主标签（可根据需要改为 dev1/dev2 在每个步骤中使用）
       TAG_DEV1: dev1
       TAG_DEV2: dev2
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        # 获取全部历史以确保 GITHUB_SHA 可用（通常默认即可）
 
       - name: Prepare metadata (lowercase owner, short sha)
-        # 把 repository owner 转小写并生成 short SHA 供后续 tag 使用
         run: |
           echo "OWNER_LOWER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
-      - name: Set up QEMU (for cross-platform emulation)
+      - name: Set up QEMU (for multi-arch emulation)
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          install: true
+          # 'install' 是不被某些版本接受的无效输入 —— 已移除
           driver: docker-container
+          # 如需额外驱动选项，可加 driver-opts，例如：
+          # driver-opts: image=moby/buildkit:latest
 
       - name: Login to GHCR
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          # Prefer a user-provided GHCR_TOKEN (fine-grained PAT) if org policies block GITHUB_TOKEN
           password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
-      # Build ubuntu22 -> dev1
-      - name: Build and push ubuntu22 -> dev1
-        id: build_ubuntu22
+      - name: Build and push (ubuntu22 -> dev1)
         uses: docker/build-push-action@v4
         with:
           context: ./v3
           file: ./v3/Dockerfile.ubuntu22
           push: true
           platforms: linux/amd64,linux/arm64
-          # 同时打浮动标签 dev1 与 可追溯的 dev1-SHORTSHA（也可使用 full SHA）
           tags: |
             ghcr.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}
           #   ghcr.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}-${{ env.SHORT_SHA }}
-          # # registry cache（推荐）：第一次构建时 cache 参考可能不存在，buildx 会回退
           # cache-from: type=registry,ref=ghcr.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22
           # cache-to: type=registry,ref=ghcr.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22,mode=max
 
-      # Build ubuntu25 -> dev2
-      - name: Build and push ubuntu25 -> dev2
-        id: build_ubuntu25
+      - name: Build and push (ubuntu25 -> dev2)
         uses: docker/build-push-action@v4
         with:
           context: ./v3
@@ -88,18 +78,8 @@ jobs:
 
       - name: Post-check (log pushed tags)
         run: |
-          echo "ubuntu22 tags:"
+          echo "pushed tags:"
           echo "  ghcr.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV1}"
           # echo "  ghcr.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV1}-${SHORT_SHA}"
-          echo "ubuntu25 tags:"
           echo "  ghcr.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV2}"
           # echo "  ghcr.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV2}-${SHORT_SHA}"
-
-      # # 可选：获取并记录镜像 digest（便于部署使用 digest 而非 tag）
-      # - name: Get image digest (optional)
-      #   if: always()
-      #   run: |
-      #     # 查询 remote manifest 的 digest（需要 docker buildx imagetools 可用）
-      #     docker run --rm moby/buildkit:buildx --version >/dev/null 2>&1 || true
-      #     # 使用 buildx imagetools（如果可用）或通过 registry API 查询 digest 也可实现
-      #     echo "To consume by digest, query registry or use buildx imagetools in a follow-up step."
