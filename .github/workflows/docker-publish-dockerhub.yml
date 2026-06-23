@@ -1,17 +1,23 @@
 name: Build and publish to Docker Hub
 
-# 触发：push 到 main、打 v* 标签或手动触发
 on:
   push:
     branches: [ main ]
     tags:
       - 'v*'
+  # 支持手动触发并可选择是否强制 cache-bust
   workflow_dispatch:
+    inputs:
+      force_cache_bust:
+        description: 'If true, force rebuild of cache-sensitive layers'
+        required: false
+        default: 'false'
 
-# 最小化权限：不需要 packages 权限（Docker Hub 使用 secrets），但 contents: read 够用
+# 最小化权限：只读内容（推镜像通过 Docker 登录的 secret 授权）
 permissions:
   contents: read
 
+# 避免并发冲突（同一 ref 同一 workflow 只保留最新运行）
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -28,9 +34,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 生成 OWNER_LOWER（优先使用 DOCKERHUB_USERNAME，如果没有则用 repo owner）
-      - name: Prepare metadata (lowercase owner, short sha)
+      - name: Prepare metadata (owner lowercase, short sha, cachebust)
         run: |
+          # Prefer using DOCKERHUB_USERNAME (if you're pushing under DockerHub account),
+          # otherwise fall back to GitHub repository owner.
           if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
             OWNER="${{ secrets.DOCKERHUB_USERNAME }}"
           else
@@ -38,18 +45,24 @@ jobs:
           fi
           echo "OWNER_LOWER=$(echo \"$OWNER\" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          if [ "${{ github.event.inputs.force_cache_bust || 'false' }}" = "true" ]; then
+            echo "CACHEBUST=${GITHUB_RUN_ID}" >> $GITHUB_ENV
+          else
+            echo "CACHEBUST=" >> $GITHUB_ENV
+          fi
 
-      # QEMU + Buildx (v4) 支持 multi-arch
       - name: Set up QEMU (for multi-arch emulation)
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
-          install: true
+          # 使用 docker-container driver，避免传入不受支持的 'install' 参数
           driver: docker-container
+          # 如果你经常遇到 "Unable to reserve cache" 的错误，可以把 cache-binary 关掉
+          # 若想启用共享二进制缓存可删掉或设置为 true
+          cache-binary: false
 
-      # 登录 Docker Hub：必须设置 DOCKERHUB_USERNAME & DOCKERHUB_PASSWORD (建议用 token)
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
@@ -57,15 +70,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
-      # 可选：验证登录状态（便于调试用户名/密码问题）
-      - name: Verify Docker login (debug)
+      - name: Verify Docker client (debug)
         run: |
-          echo "Docker login info:"
-          docker info >/dev/null || true
-          # 输出当前 docker login config（仅少量信息，避免泄露 secret）
           docker --version
+          # docker info may print environment info; it won't reveal secrets
+          docker info || true
 
-      # Build + push ubuntu22 -> dev1
+      # Build & push ubuntu22 -> dev1
       - name: Build and push (ubuntu22 -> dev1)
         id: build_ubuntu22
         uses: docker/build-push-action@v4
@@ -73,14 +84,21 @@ jobs:
           context: ./v3
           file: ./v3/Dockerfile.ubuntu22
           push: true
+          # 若希望强制拉基础镜像以获取 upstream 更新，可启用 pull
+          pull: true
           platforms: linux/amd64,linux/arm64
+          # tags: 使用多行块，避免多余引号导致 parse error
           tags: |
             docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}
-          #   docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}-${{ env.SHORT_SHA }}
+            # docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV1 }}-${{ env.SHORT_SHA }}
+          # 可选 build-arg 用于在需要时破坏缓存（Dockerfile 需声明 ARG CACHEBUST）
+          build-arg: |
+            CACHEBUST=${{ env.CACHEBUST }}
+          # registry cache（推荐），首次构建时缓存可能不存在，buildx 会回退
           cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22
           cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu22,mode=max
 
-      # Build + push ubuntu25 -> dev2
+      # Build & push ubuntu25 -> dev2
       - name: Build and push (ubuntu25 -> dev2)
         id: build_ubuntu25
         uses: docker/build-push-action@v4
@@ -88,17 +106,19 @@ jobs:
           context: ./v3
           file: ./v3/Dockerfile.ubuntu25
           push: true
+          pull: true
           platforms: linux/amd64,linux/arm64
           tags: |
             docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV2 }}
-          #   docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV2 }}-${{ env.SHORT_SHA }}
+            # docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:${{ env.TAG_DEV2 }}-${{ env.SHORT_SHA }}
+          build-arg: |
+            CACHEBUST=${{ env.CACHEBUST }}
           cache-from: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25
           cache-to: type=registry,ref=docker.io/${{ env.OWNER_LOWER }}/${{ env.IMAGE_NAME }}:cache-ubuntu25,mode=max
 
-      # 输出推送的 tag（便于后续检查）
-      - name: Post-check (log pushed tags)
+      - name: Post-check (pushed tags)
         run: |
-          echo "pushed tags:"
+          echo "Pushed tags:"
           echo "  docker.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV1}"
           # echo "  docker.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV1}-${SHORT_SHA}"
           echo "  docker.io/${OWNER_LOWER}/${IMAGE_NAME}:${TAG_DEV2}"
